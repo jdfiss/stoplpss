@@ -13,6 +13,7 @@ let positions = [];
 let unsub = null;
 let detailPos = null;
 let detailCandles = null;
+let detailMeta = null;
 let detailK = 2.0;
 
 // ── Auth ──
@@ -95,39 +96,48 @@ async function fetchCandles(ticker) {
     const url = `${YAHOO}${ticker}${suffix}?interval=1d&range=6mo`;
     for (const makeProxy of PROXIES) {
       try {
-        const res = await fetch(makeProxy(url));
+        const res = await fetchWithTimeout(makeProxy(url), 8000);
         if (!res.ok) continue;
         const json = await res.json();
         const candles = parseYahooData(json);
-        if (candles && candles.length >= 5) return candles;
+        const meta = parseYahooMeta(json);
+        if (candles && candles.length >= 5) return { candles, meta };
       } catch { continue; }
     }
   }
   return null;
 }
 
-async function fetchNews(ticker) {
-  const fiveDaysAgoMs = Date.now() - 5 * 86400 * 1000;
-  const query = encodeURIComponent(`${ticker} 台股 OR 股價`);
-  const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+function fetchWithTimeout(url, ms = 8000) {
+  return Promise.race([
+    fetch(url),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))
+  ]);
+}
 
-  for (const makeProxy of PROXIES) {
+async function fetchNews(ticker, stockName) {
+  const fiveDaysAgoMs = Date.now() - 5 * 86400 * 1000;
+  const queries = [
+    `${ticker} ${stockName || ''} 股價`.trim(),
+    `${ticker} 台股`
+  ];
+  for (const q of queries) {
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+    const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}&count=20`;
     try {
-      const res = await fetch(makeProxy(rssUrl));
+      const res = await fetchWithTimeout(apiUrl, 8000);
       if (!res.ok) continue;
-      const xml = await res.text();
-      const doc = new DOMParser().parseFromString(xml, 'text/xml');
-      const items = Array.from(doc.querySelectorAll('item'));
-      if (!items.length) continue;
-      const news = items.map(it => {
-        const title = it.querySelector('title')?.textContent || '';
-        const rawTitle = title.replace(/\s+-\s+[^-]+$/, '');
-        const sourceMatch = title.match(/-\s+([^-]+)$/);
+      const json = await res.json();
+      if (json.status !== 'ok' || !json.items?.length) continue;
+      const news = json.items.map(it => {
+        const t = it.title || '';
+        const cleanTitle = t.replace(/\s+-\s+[^-]+$/, '');
+        const pubMs = new Date(it.pubDate).getTime();
         return {
-          title: rawTitle,
-          link: it.querySelector('link')?.textContent || '',
-          publisher: it.querySelector('source')?.textContent || (sourceMatch ? sourceMatch[1].trim() : ''),
-          providerPublishTime: new Date(it.querySelector('pubDate')?.textContent).getTime() / 1000
+          title: cleanTitle,
+          link: it.link,
+          publisher: it.author || (t.match(/-\s+([^-]+)$/) || [])[1] || '',
+          providerPublishTime: pubMs / 1000
         };
       }).filter(n => n.providerPublishTime * 1000 >= fiveDaysAgoMs)
         .sort((a, b) => b.providerPublishTime - a.providerPublishTime);
@@ -256,11 +266,13 @@ function buildCardShell(pos) {
 }
 
 async function populateCard(pos, card) {
-  const candles = await fetchCandles(pos.data.ticker);
-  if (!candles) {
+  const result = await fetchCandles(pos.data.ticker);
+  if (!result) {
     card.querySelector('.card-skeleton').textContent = '無法取得資料';
     return;
   }
+  const { candles, meta } = result;
+  const name = meta?.name || pos.data.stockName || '';
   const k = pos.data.kValue || (pos.data.timeframe === 'short' ? 2.0 : 3.0);
   const sig = calculateAllSignals(pos.data, candles, k);
   const gainClass = sig.gain >= 0 ? 'up' : 'down';
@@ -276,7 +288,10 @@ async function populateCard(pos, card) {
   if (!pills.length) pills = ['<span class="pill pill-ok">訊號正常</span>'];
   card.innerHTML = `
     <div class="card-top">
-      <div class="ticker-badge">${pos.data.ticker}</div>
+      <div class="ticker-wrap">
+        <div class="ticker-badge">${pos.data.ticker}</div>
+        ${name ? `<div class="stock-name">${name}</div>` : ''}
+      </div>
       <div class="tf-badge">${pos.data.timeframe === 'short' ? '短線' : '中長線'}</div>
     </div>
     <div class="price-row">
@@ -302,6 +317,7 @@ const priceInput = document.getElementById('input-buy-price');
 const tickerInput = document.getElementById('input-ticker');
 const priceHint = document.getElementById('price-hint');
 
+let pendingStockName = '';
 tickerInput.addEventListener('input', () => {
   clearTimeout(tickerTimer);
   const ticker = tickerInput.value.trim().toUpperCase();
@@ -310,15 +326,18 @@ tickerInput.addEventListener('input', () => {
     if (priceInput.value && priceInput.dataset.autofilled !== 'true') return;
     priceInput.classList.add('loading');
     priceHint.textContent = '🔍 抓取最新收盤價中...';
-    const candles = await fetchCandles(ticker);
+    const result = await fetchCandles(ticker);
     priceInput.classList.remove('loading');
-    if (candles && candles.length > 0) {
-      const last = candles[candles.length - 1];
+    if (result?.candles?.length > 0) {
+      const last = result.candles[result.candles.length - 1];
+      const nm = result.meta?.name || '';
+      pendingStockName = nm;
       priceInput.value = last.close.toFixed(2);
       priceInput.dataset.autofilled = 'true';
-      priceHint.innerHTML = `✅ 已填入 <b style="color:var(--blue)">${last.date}</b> 收盤價 <b style="color:var(--blue)">${last.close.toFixed(2)}</b>，可手動改成你的實際成交價`;
+      priceHint.innerHTML = `✅ <b style="color:var(--blue)">${ticker} ${nm}</b> · ${last.date} 收盤 <b style="color:var(--blue)">${last.close.toFixed(2)}</b>，可手動改`;
       lastFetchedTicker = ticker;
     } else {
+      pendingStockName = '';
       priceHint.innerHTML = '❌ 找不到此股號，請確認是 4 碼台股代號（例：2330）';
     }
   }, 600);
@@ -353,7 +372,8 @@ document.getElementById('position-form').addEventListener('submit', async e => {
   const btn = document.getElementById('submit-btn');
   btn.textContent = '新增中...'; btn.disabled = true;
   try {
-    await savePosition({ ticker, buyPrice, buyDate, timeframe, swingLow });
+    await savePosition({ ticker, buyPrice, buyDate, timeframe, swingLow, stockName: pendingStockName || '' });
+    pendingStockName = '';
     closeModal();
   } catch (err) {
     alert('新增失敗：' + err.message);
@@ -369,12 +389,14 @@ async function openDetail(pos) {
   document.getElementById('detail-ticker').textContent = pos.data.ticker;
   showScreen('detail');
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div>⏳</div><p>抓取資料中...</p></div>';
-  const candles = await fetchCandles(pos.data.ticker);
-  if (!candles) {
+  const result = await fetchCandles(pos.data.ticker);
+  if (!result) {
     document.getElementById('detail-body').innerHTML = '<div class="error-state"><div>⚠️</div><p>無法取得資料，請確認股號是否正確</p></div>';
     return;
   }
-  detailCandles = candles;
+  detailCandles = result.candles;
+  detailMeta = result.meta;
+  document.getElementById('detail-ticker').textContent = `${pos.data.ticker} ${detailMeta?.name || ''}`.trim();
   renderDetail();
 }
 
@@ -384,11 +406,12 @@ function renderDetail() {
   const gainClass = sig.gain >= 0 ? 'gain' : 'loss';
   const gainStr = (sig.gain >= 0 ? '+' : '') + sig.gain.toFixed(2) + '%';
 
+  const stockName = detailMeta?.name || data.stockName || '';
   document.getElementById('detail-body').innerHTML = `
     <div class="summary-card">
       <div class="summary-head">
         <div>
-          <div class="summary-ticker">${data.ticker}</div>
+          <div class="summary-ticker">${data.ticker} <span class="summary-name">${stockName}</span></div>
           <div class="summary-meta">${data.timeframe === 'short' ? '短線' : '中長線'} · 買進日 ${data.buyDate}</div>
         </div>
       </div>
@@ -402,7 +425,7 @@ function renderDetail() {
     </div>
 
     <div class="chart-card">
-      <div class="card-head"><span>📈 近 14 日 K 線</span><span class="head-meta">紅漲綠跌 · 點擊查價</span></div>
+      <div class="card-head"><span>📈 近 30 日 K 線</span><span class="head-meta">紅漲綠跌 · 點擊查價</span></div>
       <div id="kline-container"></div>
       <div class="kline-detail" id="kline-detail"></div>
     </div>
@@ -441,8 +464,8 @@ function renderDetail() {
     <div style="height:40px"></div>`;
 
   fillSignals(sig);
-  renderKLine(document.getElementById('kline-container'), document.getElementById('kline-detail'), detailCandles, 14);
-  fetchNews(detailPos.data.ticker).then(news => {
+  renderKLine(document.getElementById('kline-container'), document.getElementById('kline-detail'), detailCandles, 30);
+  fetchNews(detailPos.data.ticker, stockName).then(news => {
     renderNewsList(document.getElementById('news-container'), news);
     document.getElementById('news-meta').textContent = news.length ? `${news.length} 則` : '無';
   });

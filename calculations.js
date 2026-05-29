@@ -10,6 +10,15 @@ function parseYahooData(raw) {
   })).filter(c => c.close != null && c.high != null && c.low != null);
 }
 
+function parseYahooMeta(raw) {
+  const m = raw.chart?.result?.[0]?.meta;
+  if (!m) return null;
+  return {
+    symbol: m.symbol || '',
+    name: m.shortName || m.longName || ''
+  };
+}
+
 function calculateATR(candles, period = 14) {
   if (candles.length < period + 1) return null;
   const trs = [];
