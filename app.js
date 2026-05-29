@@ -90,42 +90,70 @@ async function removePosition(id) {
   await db.collection('users').doc(currentUser.uid).collection('positions').doc(id).delete();
 }
 
-// ── Stock Chinese Name (TWSE / TPEx) ──
-async function fetchStockName(ticker) {
-  const today = new Date();
-  const ymd = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`;
-  const rocYear = today.getFullYear() - 1911;
-  const mm = String(today.getMonth()+1).padStart(2,'0');
-  const dd = String(today.getDate()).padStart(2,'0');
+// ── Stock Chinese Name (TWSE / TPEx OpenAPI, cached) ──
+let twListCache = null;
+let twListPromise = null;
 
-  const sources = [
-    {
-      url: `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ymd}&stockNo=${ticker}`,
-      titleField: 'title'
-    },
-    {
-      url: `https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=${rocYear}/${mm}/${dd}&stkno=${ticker}`,
-      titleField: 'reportTitle'
-    }
-  ];
-
-  for (const src of sources) {
-    for (const makeProxy of PROXIES) {
-      try {
-        const res = await fetchWithTimeout(makeProxy(src.url), 5000);
-        if (!res.ok) continue;
-        const json = await res.json();
-        const title = json[src.titleField] || '';
-        if (!title) continue;
-        const parts = title.split(/\s+/);
-        const idx = parts.indexOf(ticker);
-        if (idx !== -1 && idx + 1 < parts.length && /[一-鿿]/.test(parts[idx+1])) {
-          return parts[idx+1];
-        }
-      } catch { continue; }
-    }
+async function tryFetchJson(url, timeout = 8000) {
+  try {
+    const r = await fetchWithTimeout(url, timeout);
+    if (r.ok) return await r.json();
+  } catch {}
+  for (const makeProxy of PROXIES) {
+    try {
+      const r = await fetchWithTimeout(makeProxy(url), timeout);
+      if (r.ok) return await r.json();
+    } catch {}
   }
-  return '';
+  return null;
+}
+
+async function loadTwStockList() {
+  if (twListCache) return twListCache;
+  if (twListPromise) return twListPromise;
+
+  twListPromise = (async () => {
+    try {
+      const stored = localStorage.getItem('twStockList');
+      const ts = parseInt(localStorage.getItem('twStockListTs') || '0');
+      if (stored && Date.now() - ts < 7 * 86400 * 1000) {
+        twListCache = JSON.parse(stored);
+        return twListCache;
+      }
+    } catch {}
+
+    const list = {};
+    const urls = [
+      'https://openapi.twse.com.tw/v1/opendata/t187ap03_L',
+      'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O'
+    ];
+    for (const url of urls) {
+      const data = await tryFetchJson(url, 10000);
+      if (Array.isArray(data)) {
+        data.forEach(c => {
+          const code = c.公司代號 || c.SecuritiesCompanyCode || c.Code || '';
+          const name = c.公司簡稱 || c.CompanyAbbreviation || c.AbbreviationName || '';
+          if (code && name) list[code] = name;
+        });
+      }
+    }
+
+    twListCache = list;
+    if (Object.keys(list).length > 0) {
+      try {
+        localStorage.setItem('twStockList', JSON.stringify(list));
+        localStorage.setItem('twStockListTs', Date.now().toString());
+      } catch {}
+    }
+    return list;
+  })();
+
+  return twListPromise;
+}
+
+async function fetchStockName(ticker) {
+  const list = await loadTwStockList();
+  return list[ticker] || '';
 }
 
 // ── Yahoo Finance ──
