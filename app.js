@@ -153,7 +153,29 @@ async function loadTwStockList() {
 
 async function fetchStockName(ticker) {
   const list = await loadTwStockList();
-  return list[ticker] || '';
+  if (list[ticker]) return list[ticker];
+
+  // Fallback：用 STOCK_DAY 單檔 title 解析
+  const today = new Date();
+  const ymd = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`;
+  const urls = [
+    `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ymd}&stockNo=${ticker}`
+  ];
+  for (const url of urls) {
+    const data = await tryFetchJson(url, 5000);
+    const title = data?.title || data?.reportTitle || '';
+    if (title) {
+      const parts = title.split(/\s+/);
+      const idx = parts.indexOf(ticker);
+      if (idx !== -1 && idx + 1 < parts.length && /[一-鿿]/.test(parts[idx+1])) {
+        // 順便補進 cache
+        list[ticker] = parts[idx+1];
+        try { localStorage.setItem('twStockList', JSON.stringify(list)); } catch {}
+        return parts[idx+1];
+      }
+    }
+  }
+  return '';
 }
 
 // ── Yahoo Finance ──
@@ -302,6 +324,12 @@ function renderKLine(container, detailBox, candles, days = 14) {
   container.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:200px;display:block">
       ${bars}
+      <g id="crosshair" style="display:none;pointer-events:none">
+        <line id="ch-v" x1="0" y1="${padT}" x2="0" y2="${H - padB}" stroke="rgba(255,255,255,.5)" stroke-width="0.2" stroke-dasharray="0.6,0.4"/>
+        <line id="ch-h" x1="${padL}" y1="0" x2="${W - padR}" y2="0" stroke="rgba(255,255,255,.5)" stroke-width="0.2" stroke-dasharray="0.6,0.4"/>
+        <rect id="ch-tag-bg" x="0" y="0" width="9" height="3.6" fill="rgba(183,148,244,.95)" rx="0.6"/>
+        <text id="ch-tag" x="0" y="0" font-size="2.6" fill="#1a1625" text-anchor="middle" font-weight="700"></text>
+      </g>
       ${hits}
       <text x="${padL}" y="${H - 2}" font-size="3" fill="#a39cb8">${firstDate}</text>
       <text x="${W - padR}" y="${H - 2}" font-size="3" fill="#a39cb8" text-anchor="end">${lastDate}</text>
@@ -326,13 +354,45 @@ function renderKLine(container, detailBox, candles, days = 14) {
       </div>`;
   };
 
-  showCandle(recent[recent.length - 1]);
+  const crosshair = container.querySelector('#crosshair');
+  const chV = container.querySelector('#ch-v');
+  const chH = container.querySelector('#ch-h');
+  const chTag = container.querySelector('#ch-tag');
+  const chTagBg = container.querySelector('#ch-tag-bg');
+
+  const moveCrosshair = (idx) => {
+    const c = recent[idx];
+    const cx = x(idx);
+    const cy = y(c.close);
+    crosshair.style.display = '';
+    chV.setAttribute('x1', cx);
+    chV.setAttribute('x2', cx);
+    chH.setAttribute('y1', cy);
+    chH.setAttribute('y2', cy);
+    chTag.textContent = c.close.toFixed(2);
+    const tagX = W - padR - 0.5;
+    const tagY = cy + 1.2;
+    chTagBg.setAttribute('x', tagX - 9);
+    chTagBg.setAttribute('y', cy - 1.8);
+    chTag.setAttribute('x', tagX - 4.5);
+    chTag.setAttribute('y', tagY);
+  };
+
+  const hideCrosshair = () => { crosshair.style.display = 'none'; };
+
+  const select = (idx) => {
+    showCandle(recent[idx]);
+    moveCrosshair(idx);
+  };
+
+  // 預設顯示最後一根
+  select(recent.length - 1);
 
   container.querySelectorAll('.k-hit').forEach(el => {
     const idx = parseInt(el.dataset.idx);
-    el.addEventListener('mouseenter', () => showCandle(recent[idx]));
-    el.addEventListener('touchstart', e => { e.preventDefault(); showCandle(recent[idx]); }, { passive: false });
-    el.addEventListener('click', () => showCandle(recent[idx]));
+    el.addEventListener('mouseenter', () => select(idx));
+    el.addEventListener('touchstart', e => { e.preventDefault(); select(idx); }, { passive: false });
+    el.addEventListener('click', () => select(idx));
   });
 }
 
