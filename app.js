@@ -429,7 +429,6 @@ document.getElementById('position-form').addEventListener('submit', async e => {
 async function openDetail(pos) {
   detailPos = pos;
   detailK = pos.data.kValue || (pos.data.timeframe === 'short' ? 2.0 : 3.0);
-  document.getElementById('detail-ticker').textContent = pos.data.ticker;
   showScreen('detail');
   document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div>⏳</div><p>抓取資料中...</p></div>';
   const result = await fetchCandles(pos.data.ticker);
@@ -439,7 +438,6 @@ async function openDetail(pos) {
   }
   detailCandles = result.candles;
   detailMeta = result.meta;
-  document.getElementById('detail-ticker').textContent = `${pos.data.ticker} ${detailMeta?.name || ''}`.trim();
   renderDetail();
 }
 

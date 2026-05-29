@@ -1,0 +1,17 @@
+{
+  "name": "啊你有賣嗎?",
+  "short_name": "啊你有賣嗎?",
+  "description": "輸入你買的股票，每天打開來看「今天該不該賣？」",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#1a1625",
+  "theme_color": "#1a1625",
+  "icons": [
+    {
+      "src": "icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
