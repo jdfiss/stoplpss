@@ -61,6 +61,18 @@
         <li>每天打開來看，🔴 = 該賣保命、🟢 = 該賣收割</li>
       </ol>
     </div>
+    <div id="chat-card">
+      <div class="chat-head">
+        <span>💬 跟我聊天</span>
+        <span class="chat-hint">訊息會直接傳到我的 Telegram</span>
+      </div>
+      <textarea id="chat-input" placeholder="想說什麼都可以，bug 回報 / 功能建議 / 隨便聊..." rows="2"></textarea>
+      <div class="chat-foot">
+        <span id="chat-status"></span>
+        <button id="chat-send" class="btn-chat">發送</button>
+      </div>
+    </div>
+
     <div id="empty-state" class="empty-state hidden">
       <div class="empty-icon">📋</div>
       <p>還沒有追蹤中的股票</p>
@@ -126,6 +138,7 @@
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
+<script src="telegram-config.js"></script>
 <script src="calculations.js"></script>
 <script src="app.js"></script>
 </body>

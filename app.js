@@ -719,6 +719,64 @@ function makeSignalCard(s, type) {
   return el;
 }
 
+// ── Telegram chat ──
+let lastChatSentAt = 0;
+const chatSendBtn = document.getElementById('chat-send');
+const chatInput = document.getElementById('chat-input');
+const chatStatus = document.getElementById('chat-status');
+
+chatSendBtn.addEventListener('click', async () => {
+  const text = chatInput.value.trim();
+  if (!text) {
+    chatStatus.innerHTML = '<span style="color:var(--muted)">寫點什麼吧～</span>';
+    return;
+  }
+  const now = Date.now();
+  if (now - lastChatSentAt < 5000) {
+    chatStatus.innerHTML = '<span style="color:var(--yellow)">⏳ 等 5 秒再發</span>';
+    return;
+  }
+  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN === 'YOUR_BOT_TOKEN') {
+    chatStatus.innerHTML = '<span style="color:var(--red)">⚠ TG bot 尚未設定</span>';
+    return;
+  }
+
+  chatSendBtn.disabled = true;
+  chatSendBtn.textContent = '發送中...';
+  chatStatus.textContent = '';
+
+  const who = currentUser
+    ? `${currentUser.displayName || '匿名'}\n${currentUser.email || ''}`
+    : '訪客（未登入）';
+  const body = `💬 <b>啊你有賣嗎? 留言</b>\n\n👤 ${who}\n\n${text}`;
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: body,
+        parse_mode: 'HTML'
+      })
+    });
+    const json = await res.json();
+    if (json.ok) {
+      chatInput.value = '';
+      lastChatSentAt = now;
+      chatStatus.innerHTML = '<span style="color:var(--green)">✓ 已送出</span>';
+    } else {
+      chatStatus.innerHTML = `<span style="color:var(--red)">✗ ${json.description || '失敗'}</span>`;
+    }
+  } catch (e) {
+    chatStatus.innerHTML = '<span style="color:var(--red)">✗ 網路錯誤</span>';
+  } finally {
+    chatSendBtn.disabled = false;
+    chatSendBtn.textContent = '發送';
+    setTimeout(() => { chatStatus.textContent = ''; }, 4000);
+  }
+});
+
 document.getElementById('back-btn').addEventListener('click', () => showScreen('dashboard'));
 
 document.getElementById('delete-position-btn').addEventListener('click', async () => {
