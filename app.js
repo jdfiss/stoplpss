@@ -90,8 +90,47 @@ async function removePosition(id) {
   await db.collection('users').doc(currentUser.uid).collection('positions').doc(id).delete();
 }
 
+// ── Stock Chinese Name (TWSE / TPEx) ──
+async function fetchStockName(ticker) {
+  const today = new Date();
+  const ymd = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`;
+  const rocYear = today.getFullYear() - 1911;
+  const mm = String(today.getMonth()+1).padStart(2,'0');
+  const dd = String(today.getDate()).padStart(2,'0');
+
+  const sources = [
+    {
+      url: `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ymd}&stockNo=${ticker}`,
+      titleField: 'title'
+    },
+    {
+      url: `https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=${rocYear}/${mm}/${dd}&stkno=${ticker}`,
+      titleField: 'reportTitle'
+    }
+  ];
+
+  for (const src of sources) {
+    for (const makeProxy of PROXIES) {
+      try {
+        const res = await fetchWithTimeout(makeProxy(src.url), 5000);
+        if (!res.ok) continue;
+        const json = await res.json();
+        const title = json[src.titleField] || '';
+        if (!title) continue;
+        const parts = title.split(/\s+/);
+        const idx = parts.indexOf(ticker);
+        if (idx !== -1 && idx + 1 < parts.length && /[一-鿿]/.test(parts[idx+1])) {
+          return parts[idx+1];
+        }
+      } catch { continue; }
+    }
+  }
+  return '';
+}
+
 // ── Yahoo Finance ──
 async function fetchCandles(ticker) {
+  const namePromise = fetchStockName(ticker);
   for (const suffix of ['.TW', '.TWO']) {
     const url = `${YAHOO}${ticker}${suffix}?interval=1d&range=6mo`;
     for (const makeProxy of PROXIES) {
@@ -100,8 +139,12 @@ async function fetchCandles(ticker) {
         if (!res.ok) continue;
         const json = await res.json();
         const candles = parseYahooData(json);
-        const meta = parseYahooMeta(json);
-        if (candles && candles.length >= 5) return { candles, meta };
+        const meta = parseYahooMeta(json) || { symbol: '', name: '' };
+        if (candles && candles.length >= 5) {
+          const cn = await namePromise.catch(() => '');
+          if (cn) meta.name = cn;
+          return { candles, meta };
+        }
       } catch { continue; }
     }
   }
