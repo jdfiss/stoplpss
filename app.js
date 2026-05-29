@@ -512,7 +512,11 @@ async function openDetail(pos) {
   detailPos = pos;
   detailK = pos.data.kValue || (pos.data.timeframe === 'short' ? 2.0 : 3.0);
   showScreen('detail');
-  document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div>⏳</div><p>抓取資料中...</p></div>';
+  document.getElementById('detail-body').innerHTML = '<div class="loading-state"><div>⏳</div><p>抓取股價中...</p></div>';
+
+  // 新聞並行抓，不擋頁面
+  const newsPromise = fetchNews(pos.data.ticker, pos.data.stockName);
+
   const result = await fetchCandles(pos.data.ticker);
   if (!result) {
     document.getElementById('detail-body').innerHTML = '<div class="error-state"><div>⚠️</div><p>無法取得資料，請確認股號是否正確</p></div>';
@@ -521,6 +525,23 @@ async function openDetail(pos) {
   detailCandles = result.candles;
   detailMeta = result.meta;
   renderDetail();
+
+  // 股名抓到後用更準的關鍵字再補抓一次新聞（如果第一次沒有結果或股名是空的時候）
+  const finalName = detailMeta?.name || pos.data.stockName;
+  newsPromise.then(news => {
+    const container = document.getElementById('news-container');
+    const metaEl = document.getElementById('news-meta');
+    if (!container) return;
+    if (news.length === 0 && finalName && finalName !== pos.data.stockName) {
+      fetchNews(pos.data.ticker, finalName).then(n2 => {
+        renderNewsList(container, n2);
+        if (metaEl) metaEl.textContent = n2.length ? `${n2.length} 則` : '無';
+      });
+    } else {
+      renderNewsList(container, news);
+      if (metaEl) metaEl.textContent = news.length ? `${news.length} 則` : '無';
+    }
+  });
 }
 
 function renderDetail() {
@@ -588,10 +609,6 @@ function renderDetail() {
 
   fillSignals(sig);
   renderKLine(document.getElementById('kline-container'), document.getElementById('kline-detail'), detailCandles, 30);
-  fetchNews(detailPos.data.ticker, stockName).then(news => {
-    renderNewsList(document.getElementById('news-container'), news);
-    document.getElementById('news-meta').textContent = news.length ? `${news.length} 則` : '無';
-  });
 
   document.getElementById('k-slider').addEventListener('input', e => {
     detailK = parseFloat(e.target.value);
