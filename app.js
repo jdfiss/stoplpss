@@ -187,33 +187,80 @@ function fetchWithTimeout(url, ms = 8000) {
 }
 
 async function fetchNews(ticker, stockName) {
-  const fiveDaysAgoMs = Date.now() - 5 * 86400 * 1000;
+  const fiveDaysAgoSec = Math.floor(Date.now() / 1000) - 5 * 86400;
   const queries = [
-    `${ticker} ${stockName || ''} 股價`.trim(),
+    stockName ? `${stockName} 股價` : '',
+    stockName ? `${ticker} ${stockName}` : '',
     `${ticker} 台股`
-  ];
+  ].filter(Boolean);
+
+  // 策略 1：Google News RSS 透過 CORS proxy → 直接解 XML
+  for (const q of queries) {
+    const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+    for (const makeProxy of PROXIES) {
+      try {
+        const res = await fetchWithTimeout(makeProxy(rssUrl), 6000);
+        if (!res.ok) continue;
+        const text = await res.text();
+        if (!text.includes('<item>')) continue;
+        const doc = new DOMParser().parseFromString(text, 'text/xml');
+        const items = Array.from(doc.querySelectorAll('item'));
+        if (!items.length) continue;
+        const news = items.map(it => {
+          const t = it.querySelector('title')?.textContent || '';
+          const cleanTitle = t.replace(/\s+-\s+[^-]+$/, '');
+          const src = (t.match(/-\s+([^-]+)$/) || [])[1] || '';
+          return {
+            title: cleanTitle,
+            link: it.querySelector('link')?.textContent || '',
+            publisher: it.querySelector('source')?.textContent || src.trim(),
+            providerPublishTime: new Date(it.querySelector('pubDate')?.textContent).getTime() / 1000
+          };
+        }).filter(n => n.providerPublishTime >= fiveDaysAgoSec)
+          .sort((a, b) => b.providerPublishTime - a.providerPublishTime);
+        if (news.length) return news;
+      } catch { continue; }
+    }
+  }
+
+  // 策略 2：rss2json fallback
   for (const q of queries) {
     const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
     const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}&count=20`;
     try {
-      const res = await fetchWithTimeout(apiUrl, 8000);
+      const res = await fetchWithTimeout(apiUrl, 6000);
       if (!res.ok) continue;
       const json = await res.json();
       if (json.status !== 'ok' || !json.items?.length) continue;
       const news = json.items.map(it => {
         const t = it.title || '';
-        const cleanTitle = t.replace(/\s+-\s+[^-]+$/, '');
-        const pubMs = new Date(it.pubDate).getTime();
         return {
-          title: cleanTitle,
+          title: t.replace(/\s+-\s+[^-]+$/, ''),
           link: it.link,
-          publisher: it.author || (t.match(/-\s+([^-]+)$/) || [])[1] || '',
-          providerPublishTime: pubMs / 1000
+          publisher: (t.match(/-\s+([^-]+)$/) || [])[1] || '',
+          providerPublishTime: new Date(it.pubDate).getTime() / 1000
         };
-      }).filter(n => n.providerPublishTime * 1000 >= fiveDaysAgoMs)
+      }).filter(n => n.providerPublishTime >= fiveDaysAgoSec)
         .sort((a, b) => b.providerPublishTime - a.providerPublishTime);
       if (news.length) return news;
     } catch { continue; }
+  }
+
+  // 策略 3：Yahoo Finance 新聞 (覆蓋率較差但穩定)
+  for (const suffix of ['.TW', '.TWO']) {
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${ticker}${suffix}&newsCount=15&quotesCount=0&lang=zh-TW&region=TW`;
+    for (const makeProxy of PROXIES) {
+      try {
+        const res = await fetchWithTimeout(makeProxy(url), 6000);
+        if (!res.ok) continue;
+        const json = await res.json();
+        if (!json.news?.length) continue;
+        const news = json.news
+          .filter(n => n.providerPublishTime >= fiveDaysAgoSec)
+          .sort((a, b) => b.providerPublishTime - a.providerPublishTime);
+        if (news.length) return news;
+      } catch { continue; }
+    }
   }
   return [];
 }
@@ -291,15 +338,22 @@ function renderKLine(container, detailBox, candles, days = 14) {
 
 function renderNewsList(container, news) {
   if (!news || news.length === 0) {
-    container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px;font-size:13px">暫無相關新聞</div>';
+    container.innerHTML = '<div style="color:var(--muted);text-align:center;padding:24px 12px;font-size:13px;line-height:1.6">暫無近 5 日相關新聞 🦗<br><span style="font-size:11px">（資料來源限制，僅供參考）</span></div>';
     return;
   }
-  container.innerHTML = news.slice(0, 6).map(n => {
+  container.innerHTML = news.slice(0, 8).map(n => {
     const ts = n.providerPublishTime ? new Date(n.providerPublishTime * 1000) : null;
-    const dateStr = ts ? `${ts.getMonth()+1}/${ts.getDate()}` : '';
+    const now = Date.now();
+    let dateStr = '';
+    if (ts) {
+      const diffMin = Math.floor((now - ts.getTime()) / 60000);
+      if (diffMin < 60) dateStr = `${diffMin} 分前`;
+      else if (diffMin < 1440) dateStr = `${Math.floor(diffMin/60)} 小時前`;
+      else dateStr = `${ts.getMonth()+1}/${ts.getDate()}`;
+    }
     return `<a href="${n.link}" target="_blank" rel="noopener" class="news-item">
       <div class="news-title">${n.title}</div>
-      <div class="news-meta">${n.publisher || ''} · ${dateStr}</div>
+      <div class="news-meta">${n.publisher || '—'} · ${dateStr}</div>
     </a>`;
   }).join('');
 }
